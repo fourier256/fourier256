@@ -1,0 +1,152 @@
+import time
+import numpy as np
+import matplotlib.pyplot as plt
+
+import my_bithumb as bt
+import my_telegram_bot
+from my_util import print_log
+from my_util import get_buf
+
+import config
+
+def initialize() :
+    bt.initialize()
+    bt.init_candle(2)
+    draw_plot()
+    my_telegram_bot.send_image('graph.png')
+    print_log('KPSTB_GRID_Started')
+    print_log('KP = ' + str(bt.get_kp()))
+    print_log('MA = ' + str(bt.get_ma()))
+    my_telegram_bot.log_telegram(get_buf())
+    return 0
+
+def main_loop() :
+    is_running = True
+    while is_running :
+        t0 = time.time()
+        sub_loop_1s()
+        t1 = time.time()
+        time_elapsed = t1-t0
+        if time_elapsed < 1.0 :
+            time.sleep(1.0-time_elapsed)
+        if time.localtime(t0).tm_min != time.localtime().tm_min :
+            sub_loop_1m()
+            if time.localtime(t0).tm_min == 0 :
+                sub_loop_1h()
+    return 0
+
+def sub_loop_1s() :
+    bt.update_balance()
+    bt.update_orders()
+    bt.update_orderbook()
+    bt.update_market_price()
+    bt.update_candle_tail(bt.get_kp())
+    anchors = [-2, -1, 0, 1, 2]
+    hold_position = bt.hold_position
+    amount = round( (bt.hold_position+(bt.hold_krw/bt.market_price)) / len(anchors) - 100 )
+    orders_new = []
+    for i in range(len(anchors)) :
+        ask_price = float(max(np.ceil(bt.get_ma() + +anchors[i] + 0.5), bt.ask_price))
+        bid_price = float(min(np.floor(bt.get_ma() + anchors[i] - 0.5), bt.bid_price))
+        min_hold = amount*(len(anchors)-i-1)
+        max_hold = amount*(len(anchors)-i)
+        ask_amount = min(amount, max(0, hold_position-min_hold))
+        bid_amount = min(amount, max(0, max_hold-hold_position))
+        if ask_amount > 5 :
+            orders_new.append(('ask', '-', '-', '-', ask_price, ask_amount))
+        if bid_amount > 5 :
+            orders_new.append(('bid', '-', '-', '-', bid_price, bid_amount))
+    for order_old in bt.orders :
+        b_waiting = False
+        for order_new in orders_new :
+            if order_new[0]==order_old[0] and order_new[4]==order_old[4] :
+                b_waiting = True
+                break
+        if not b_waiting :
+            print_log('cancel ' + str(order_old))
+            bt.cancel_order(order_old[2])
+            time.sleep(0.5)
+    for order_new in orders_new :
+        b_pending = False
+        for order_old in bt.orders :
+            if order_new[0]==order_old[0] and order_new[4]==order_old[4] :
+                b_pending = True
+                break
+        if not b_pending :
+            print_log('issue ' + str(order_new))
+            if order_new[0]=='bid' :
+                bt.buy_limit_order('USDT', order_new[4], order_new[5])
+            elif order_new[0]=='ask' :
+                bt.sell_limit_order('USDT', order_new[4], order_new[5])
+            time.sleep(0.5)
+    for order_id in bt.order_details :
+        if bt.order_details[order_id]['data']['order_status'] == 'Completed' :
+            print_log('complete ' + str(bt.order_details[order_id]['data']['type']) + ', ' + str(bt.order_details[order_id]['data']['order_price']))
+    buf = get_buf()
+    if len(buf)>1 :
+        my_telegram_bot.log_telegram(buf)
+    return 0
+
+def sub_loop_1m() :
+    bt.update_candle(bt.get_kp())
+    if time.localtime().tm_min%5==0 :
+        print_log('KPSTB_GRID_Still_Alive')
+        print_log('KP = ' + str(bt.get_kp()))
+        print_log('MA = ' + str(bt.get_ma()))
+        print_log(str(bt.candle[-10:]))
+        my_telegram_bot.log_telegram(get_buf())
+    return 0
+
+def sub_loop_1h() :
+    draw_plot()
+    my_telegram_bot.send_image('graph.png')
+    return 0
+
+def draw_plot() :
+    bt_candle = np.random.uniform(100, 110, 1440)
+    bt_ma_arr = np.random.uniform(100, 110, 1440)
+    bt_ma_arr_r1 = np.random.uniform(100, 110, 1440)
+    bt_ma_arr_r2 = np.random.uniform(100, 110, 1440)
+    bt_ma_arr_r3 = np.random.uniform(100, 110, 1440)
+    bt_ma_arr_r4 = np.random.uniform(100, 110, 1440)
+    bt_ma_arr_r5 = np.random.uniform(100, 110, 1440)
+    bt_ma_arr_r6 = np.random.uniform(100, 110, 1440)
+
+    for i in range(1440) :
+        bt_candle[i] = bt.candle[i+1440]
+        bt_ma_arr[i] = sum(bt.candle[i:i+1440])/1440
+        bt_ma_arr_r1[i] = np.floor(bt_ma_arr[i]-0.5)
+        bt_ma_arr_r2[i] = np.floor(bt_ma_arr[i]-1.5)
+        bt_ma_arr_r3[i] = np.floor(bt_ma_arr[i]-2.5)
+        bt_ma_arr_r4[i] = np.ceil(bt_ma_arr[i]+0.5)
+        bt_ma_arr_r5[i] = np.ceil(bt_ma_arr[i]+1.5)
+        bt_ma_arr_r6[i] = np.ceil(bt_ma_arr[i]+2.5)
+        
+    plt.figure(figsize=(12, 6))
+    plt.plot(bt_ma_arr, label='bt.ma_arr', color='blue')
+    plt.plot(bt_ma_arr_r1, label='bt.ma_arr_r1', color='skyblue')
+    plt.plot(bt_ma_arr_r2, label='bt.ma_arr_r2', color='skyblue')
+    plt.plot(bt_ma_arr_r3, label='bt.ma_arr_r3', color='skyblue')
+    plt.plot(bt_ma_arr_r4, label='bt.ma_arr_r4', color='skyblue')
+    plt.plot(bt_ma_arr_r5, label='bt.ma_arr_r3', color='skyblue')
+    plt.plot(bt_ma_arr_r6, label='bt.ma_arr_r4', color='skyblue')
+    plt.plot(bt_candle, label='bt.candle', color='orange')
+    plt.title('Graph of bt.candle and bt.ma_arr')
+    plt.xlabel('Index')
+    plt.ylabel('Value')
+    plt.legend()
+    plt.grid()
+    plt.ylim(min(min(bt_ma_arr_r1), min(bt_candle))-1, max(max(bt_ma_arr_r6), max(bt_candle))+1)
+    plt.savefig('graph.png')
+    plt.close()
+    return 0
+
+def main() :
+    initialize()
+    main_loop()
+    #draw_plot()
+    return 0
+
+if __name__ == "__main__" :
+    main()
+
